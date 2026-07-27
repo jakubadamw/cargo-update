@@ -1920,12 +1920,10 @@ struct SparseHandler<'m, 'w: 'm, W: Write>(String,
 
 impl<'m, 'w: 'm, W: Write> CurlHandler for SparseHandler<'m, 'w, W> {
     fn write(&mut self, data: &[u8]) -> Result<usize, CurlWriteError> {
-        let mut consumed = 0;
         self.1 = mem::replace(&mut self.1, Err("write".into())).and_then(|(mut vers, mut buf)| {
             for l in data.split_inclusive(|&b| b == b'\n') {
                 if !l.ends_with(b"\n") {
                     buf.extend(l);
-                    consumed += l.len();
                     continue;
                 }
 
@@ -1937,11 +1935,15 @@ impl<'m, 'w: 'm, W: Write> CurlHandler for SparseHandler<'m, 'w, W> {
                 };
                 vers.extend(crate_version_line(line)?);
                 buf.clear();
-                consumed += l.len();
             }
             Ok((vers, buf))
         });
-        Ok(consumed)
+        // Always claim the whole buffer, even if parsing failed: a short write is fatal to curl, and it tears down the shared HTTP/2
+        // session along with all the other transfers multiplexed onto it, which then never complete, so `curl_multi_perform()`
+        // keeps reporting them as running forever. This is easy to hit, since error pages (404 &c.) are fed here too, and never
+        // parse. The parse error is remembered in `self.1` and surfaced once the transfer is done, by which point we know the
+        // response code.
+        Ok(data.len())
     }
 
     fn progress(&mut self, dltotal: f64, dlnow: f64, _: f64, _: f64) -> bool {
